@@ -1,50 +1,126 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 
-st.set_page_config(page_title="T-Junction App", layout="wide")
+# ตั้งค่าหน้ากระดาษให้กว้างและสวยงาม
+st.set_page_config(page_title="3-Way Turning Movement Analysis", layout="wide")
 
-st.title("🚦 3-Way Junction Analysis")
+# ส่วนหัวของแอปพลิเคชัน
+st.title("🚦 Turning Movement Count Analysis (3-Way)")
+st.markdown("โปรแกรมคำนวณปริมาณจราจรรายชั่วโมง สัดส่วนการเลี้ยว และค่า PHF สำหรับทาง 3 แยก")
 
-# ส่วนเลือกรูปแบบทางแยก
-type_3way = st.sidebar.selectbox("รูปแบบจุดตัด (ขาที่หายไป)", ["ไม่มีขาเหนือ (T-Shape)", "ไม่มีขาใต้", "ไม่มีขาตะวันออก", "ไม่มีขาตะวันตก"])
+# --- 1. ส่วนการเลือกรูปแบบทางแยก (ขาที่หายไป) ---
+with st.sidebar:
+    st.header("📍 Intersection Setting")
+    missing_leg = st.radio(
+        "เลือก 'ขา' ที่ไม่มี (ขาที่หายไป):",
+        ["North (ทิศเหนือ)", "South (ทิศใต้)", "East (ทิศตะวันออก)", "West (ทิศตะวันตก)"],
+        index=0
+    )
+    st.divider()
+    st.info("ระบบจะปรับตารางกรอกข้อมูลให้สอดคล้องกับทาง 3 แยกโดยอัตโนมัติ")
 
-# กำหนดทิศทาง
-if "ไม่มีขาเหนือ" in type_3way:
-    moves = {"South": ["Left", "Right"], "East": ["Left", "Through"], "West": ["Right", "Through"]}
-elif "ไม่มีขาใต้" in type_3way:
-    moves = {"North": ["Left", "Right"], "East": ["Right", "Through"], "West": ["Left", "Through"]}
-elif "ไม่มีขาตะวันออก" in type_3way:
-    moves = {"North": ["Through", "Right"], "South": ["Through", "Left"], "West": ["Left", "Right"]}
+# --- 2. Logic กำหนดทิศทางและ Movement ตามขาที่เลือก ---
+# ใน 3 แยก จะมี 6 Movements หลัก
+if "North" in missing_leg:
+    active_legs = ['South', 'East', 'West']
+    movements = {
+        'South': ['Left', 'Right'],      # ตรงไม่ได้เพราะติดทางตัน/ไม่มีขาเหนือ
+        'East': ['Straight', 'Left'],    # ขวาไม่ได้
+        'West': ['Straight', 'Right']    # ซ้ายไม่ได้
+    }
+elif "South" in missing_leg:
+    active_legs = ['North', 'East', 'West']
+    movements = {
+        'North': ['Left', 'Right'],
+        'East': ['Straight', 'Right'],
+        'West': ['Straight', 'Left']
+    }
+elif "East" in missing_leg:
+    active_legs = ['North', 'South', 'West']
+    movements = {
+        'North': ['Straight', 'Right'],
+        'South': ['Straight', 'Left'],
+        'West': ['Left', 'Right']
+    }
+else: # West หาย
+    active_legs = ['North', 'South', 'East']
+    movements = {
+        'North': ['Straight', 'Left'],
+        'South': ['Straight', 'Right'],
+        'East': ['Left', 'Right']
+    }
+
+# สร้างรายชื่อ Column ทั้งหมดสำหรับตาราง
+cols = []
+for leg in active_legs:
+    for move in movements[leg]:
+        cols.append(f"{leg}_{move}")
+
+# --- 3. ส่วนการกรอกข้อมูลราย 15 นาที (หน้าตาเหมือนแอปเดิม) ---
+st.subheader("📅 15-Minute Interval Data Entry")
+st.write("กรอกปริมาณจราจรแยกตามทิศทาง (คัน):")
+
+time_index = ['00-15 min', '15-30 min', '30-45 min', '45-60 min']
+# สร้าง DataFrame เปล่า
+if 'df_input' not in st.session_state or st.session_state.get('last_leg') != missing_leg:
+    st.session_state.df_input = pd.DataFrame(0, index=time_index, columns=cols)
+    st.session_state.last_leg = missing_leg
+
+# ตารางกรอกข้อมูลแบบ Editable (เหมือน Spreadsheet ในแอปเดิม)
+edited_df = st.data_editor(st.session_state.df_input, use_container_width=True)
+
+# --- 4. การคำนวณผลลัพธ์ ---
+# รวมยอดรายชั่วโมงของแต่ละ Movement
+hourly_totals = edited_df.sum()
+# รวมปริมาณรถรวมทั้งแยก
+grand_total = hourly_totals.sum()
+
+# คำนวณ PHF
+# รวมปริมาณรถทุกทิศทางในแต่ละ 15 นาที
+interval_sums = edited_df.sum(axis=1)
+v_max_15 = interval_sums.max() # ช่วง 15 นาทีที่รถเยอะที่สุด
+if v_max_15 > 0:
+    phf_calc = grand_total / (4 * v_max_15)
 else:
-    moves = {"North": ["Through", "Left"], "South": ["Through", "Right"], "East": ["Left", "Right"]}
+    phf_calc = 0.0
 
-# ส่วนรับข้อมูล
-st.sidebar.subheader("📥 กรอกปริมาณจราจร")
-data_list = []
-for app, directions in moves.items():
-    st.sidebar.write(f"**มาจากทิศ {app}**")
-    for d in directions:
-        val = st.sidebar.number_input(f"ไป {d}", min_value=0, key=f"{app}_{d}")
-        data_list.append({"Approach": app, "Movement": d, "Volume": val})
+# --- 5. การแสดงผล Dashboard ---
+st.divider()
+st.subheader("📊 Summary Dashboard")
 
-# คำนวณและแสดงผล
-df = pd.DataFrame(data_list)
-total = df["Volume"].sum()
-df["% Distribution"] = (df["Volume"] / total * 100) if total > 0 else 0
+m1, m2, m3 = st.columns(3)
+with m1:
+    st.metric("Total Volume (V)", f"{int(grand_total):,} veh/hr")
+with m2:
+    st.metric("Max 15-min Volume", f"{int(v_max_15):,} veh")
+with m3:
+    st.metric("Peak Hour Factor (PHF)", f"{phf_calc:.3f}")
 
-col1, col2 = st.columns([1, 2])
-with col1:
-    st.metric("Total Volume", f"{total:,}")
-    # ส่วนคำนวณ PHF แบบง่าย
-    with st.expander("คำนวณ PHF"):
-        v1 = st.number_input("15 min 1", min_value=0)
-        v2 = st.number_input("15 min 2", min_value=0)
-        v3 = st.number_input("15 min 3", min_value=0)
-        v4 = st.number_input("15 min 4", min_value=0)
-        if (v1+v2+v3+v4) > 0:
-            phf = (v1+v2+v3+v4) / (4 * max(v1, v2, v3, v4))
-            st.success(f"PHF: {phf:.3f}")
+# ตารางสรุปสัดส่วนการเลี้ยว
+st.write("### Turning Movement Summary Table")
+summary_data = []
+for col in cols:
+    vol = hourly_totals[col]
+    perc = (vol / grand_total * 100) if grand_total > 0 else 0
+    summary_data.append({
+        "Approach & Movement": col.replace("_", " "),
+        "Hourly Volume (veh)": int(vol),
+        "Percentage (%)": f"{perc:.2f}%"
+    })
 
-with col2:
-    st.subheader("Data Summary")
-    st.dataframe(df.style.format({"% Distribution": "{:.2f}"}), use_container_width=True)
+st.table(pd.DataFrame(summary_data))
+
+# --- 6. ส่วนการ Export ข้อมูล ---
+st.divider()
+c1, c2 = st.columns(2)
+with c1:
+    csv = edited_df.to_csv().encode('utf-8-sig')
+    st.download_button(
+        label="💾 Download Raw Data (CSV)",
+        data=csv,
+        file_name='traffic_data_3way.csv',
+        mime='text/csv',
+    )
+with c2:
+    st.info("คุณสามารถคัดลอกข้อมูลจากตารางด้านบนไปวางใน Excel หรือ Google Sheets ได้โดยตรง")
